@@ -1,26 +1,101 @@
-package backplane
+package backplane_test
 
 import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
-	"time"
+
+	"github.com/Michael-F-Bryan/backplane"
 )
 
 type namedResource interface {
 	Name() string
 }
 
-type concreteResource string
+type postgresStore string
 
-func (r concreteResource) Name() string { return string(r) }
+func (s postgresStore) Name() string { return string(s) }
 
-func TestNewRejectsSubscriberWithoutPublisher(t *testing.T) {
+type memoryStore string
+
+func (s memoryStore) Name() string { return string(s) }
+
+var errBoom = errors.New("boom")
+
+func failingModule(context.Context) error { return errBoom }
+
+func TestNewRejectsInvalidModuleSignatures(t *testing.T) {
+	var nilModule func(context.Context) error
+
+	tests := []struct {
+		name   string
+		module any
+	}{
+		{"not a function", 42},
+		{"untyped nil", nil},
+		{"typed nil function", nilModule},
+		{"missing context", func() error { return nil }},
+		{"context is not first", func(int, context.Context) error { return nil }},
+		{"context appears twice", func(context.Context, context.Context) error { return nil }},
+		{"no results", func(context.Context) {}},
+		{"non-error result", func(context.Context) int { return 0 }},
+		{"too many results", func(context.Context) (int, error) { return 0, nil }},
+		{"variadic", func(context.Context, ...int) error { return nil }},
+		{"bidirectional channel", func(context.Context, chan int) error { return nil }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := backplane.New(tt.module); err == nil {
+				t.Fatal("New() accepted an invalid module signature")
+			}
+		})
+	}
+}
+
+func TestNewRejectsConsumersWithoutPublisher(t *testing.T) {
 	type message struct{}
-	_, err := New(func(context.Context, <-chan message) error { return nil })
-	if err == nil {
+
+	subscriber := func(context.Context, <-chan message) error { return nil }
+	if _, err := backplane.New(subscriber); err == nil {
 		t.Fatal("New() accepted a subscriber whose topic has no publisher")
+	}
+
+	watcher := func(context.Context, *backplane.Latest[message]) error { return nil }
+	if _, err := backplane.New(watcher); err == nil {
+		t.Fatal("New() accepted a Latest whose topic has no publisher")
+	}
+}
+
+func TestRunConnectsTypedPublishersAndSubscribers(t *testing.T) {
+	type jobQueued struct {
+		ID string
+	}
+
+	var got []jobQueued
+	application, err := backplane.New(
+		func(_ context.Context, jobs chan<- jobQueued) error {
+			jobs <- jobQueued{ID: "job-123"}
+			return nil
+		},
+		func(_ context.Context, jobs <-chan jobQueued) error {
+			for job := range jobs {
+				got = append(got, job)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := application.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "job-123" {
+		t.Fatalf("subscriber received %#v", got)
 	}
 }
 
@@ -40,7 +115,7 @@ func TestEverySubscriberReceivesValuesFromEveryPublisher(t *testing.T) {
 		}
 	}
 
-	application, err := New(
+	application, err := backplane.New(
 		func(_ context.Context, changes chan<- queueChanged) error {
 			changes <- "backend"
 			return nil
@@ -69,20 +144,65 @@ func TestEverySubscriberReceivesValuesFromEveryPublisher(t *testing.T) {
 	}
 }
 
-func TestRunConnectsTypedPublishersAndSubscribers(t *testing.T) {
-	type jobQueued struct {
-		ID string
-	}
+func TestTopicClosesOnlyAfterEveryPublisherFinishes(t *testing.T) {
+	type note string
 
-	var got []jobQueued
-	application, err := New(
-		func(_ context.Context, jobs chan<- jobQueued) error {
-			jobs <- jobQueued{ID: "job-123"}
+	release := make(chan struct{})
+	application, err := backplane.New(
+		func(_ context.Context, notes chan<- note) error {
+			notes <- "first"
 			return nil
 		},
-		func(_ context.Context, jobs <-chan jobQueued) error {
-			for job := range jobs {
-				got = append(got, job)
+		func(_ context.Context, notes chan<- note) error {
+			<-release
+			notes <- "second"
+			return nil
+		},
+		func(_ context.Context, notes <-chan note) error {
+			if got := <-notes; got != "first" {
+				return errors.New("expected the eager publisher's value first")
+			}
+			// The eager publisher has finished; the topic must stay open for
+			// the remaining publisher.
+			close(release)
+			if got := <-notes; got != "second" {
+				return errors.New("topic closed before every publisher finished")
+			}
+			if _, open := <-notes; open {
+				return errors.New("topic stayed open after every publisher finished")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := application.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestSuccessfulModuleDoesNotCancelSiblings(t *testing.T) {
+	type report int
+
+	finished := make(chan struct{})
+	var got report
+	application, err := backplane.New(
+		func(context.Context) error {
+			close(finished)
+			return nil
+		},
+		// The remaining modules complete a full round trip through the topic
+		// after the first module has finished; if its nil return had cancelled
+		// the group, the value would be dropped during draining.
+		func(_ context.Context, reports chan<- report) error {
+			<-finished
+			reports <- 42
+			return nil
+		},
+		func(_ context.Context, reports <-chan report) error {
+			for value := range reports {
+				got = value
 			}
 			return nil
 		},
@@ -94,63 +214,45 @@ func TestRunConnectsTypedPublishersAndSubscribers(t *testing.T) {
 	if err := application.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "job-123" {
-		t.Fatalf("subscriber received %#v", got)
+	if got != 42 {
+		t.Fatalf("subscriber received %d after a sibling completed, want 42", got)
 	}
 }
 
-func TestSuccessfulModuleDoesNotCancelSiblings(t *testing.T) {
-	siblingStarted := make(chan struct{})
+func TestPublisherOutlivesFinishedSubscriber(t *testing.T) {
+	type tick int
 
-	application, err := New(
-		func(context.Context) error { return nil },
-		func(ctx context.Context) error {
-			close(siblingStarted)
-			<-ctx.Done()
+	application, err := backplane.New(
+		func(_ context.Context, ticks chan<- tick) error {
+			// Bare sends: once the subscriber returns, its abandoned
+			// subscription must not block these forever.
+			ticks <- 1
+			ticks <- 2
+			ticks <- 3
+			return nil
+		},
+		func(_ context.Context, ticks <-chan tick) error {
+			<-ticks
 			return nil
 		},
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() { result <- application.Run(ctx) }()
-
-	select {
-	case <-siblingStarted:
-	case <-time.After(time.Second):
-		t.Fatal("sibling did not start")
-	}
-
-	select {
-	case err := <-result:
-		t.Fatalf("Run() returned after a different module completed successfully: %v", err)
-	case <-time.After(25 * time.Millisecond):
-	}
-
-	cancel()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("Run() error after parent cancellation = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Run() did not return after parent cancellation")
+	if err := application.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 
 func TestRunCancelsSiblingModulesAfterFirstError(t *testing.T) {
-	want := errors.New("printer connection failed")
 	siblingStarted := make(chan struct{})
 	siblingStopped := make(chan struct{})
 
-	application, err := New(
+	application, err := backplane.New(
 		func(ctx context.Context) error {
 			select {
 			case <-siblingStarted:
-				return want
+				return errBoom
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -166,12 +268,9 @@ func TestRunCancelsSiblingModulesAfterFirstError(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := application.Run(ctx); !errors.Is(err, want) {
-		t.Fatalf("Run() error = %v, want %v", err, want)
+	if err := application.Run(context.Background()); !errors.Is(err, errBoom) {
+		t.Fatalf("Run() error = %v, want %v", err, errBoom)
 	}
-
 	select {
 	case <-siblingStopped:
 	default:
@@ -179,38 +278,184 @@ func TestRunCancelsSiblingModulesAfterFirstError(t *testing.T) {
 	}
 }
 
-func TestRunRejectsTypedNilResourcesBeforeStartingModules(t *testing.T) {
-	type config struct{}
-	var resource *config
-	started := false
+func TestRunReturnsFirstModuleErrorAndNamesTheModule(t *testing.T) {
+	errLater := errors.New("shutdown error")
 
-	application, err := New(func(context.Context, *config) error {
-		started = true
-		return nil
+	// The sibling errors only after cancellation, which only follows the
+	// first error, so errBoom is deterministically first.
+	application, err := backplane.New(
+		failingModule,
+		func(ctx context.Context) error {
+			<-ctx.Done()
+			return errLater
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	err = application.Run(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Run() error = %v, want the first error %v", err, errBoom)
+	}
+	if errors.Is(err, errLater) {
+		t.Fatalf("Run() error = %v, must not be the later error", err)
+	}
+	if !strings.Contains(err.Error(), "failingModule") {
+		t.Fatalf("Run() error %q does not name the failing module", err)
+	}
+}
+
+func TestParentCancellationStopsRun(t *testing.T) {
+	started := make(chan struct{})
+	application, err := backplane.New(func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if err := application.Run(context.Background(), resource); err == nil {
-		t.Fatal("Run() accepted a typed nil resource")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	if err := application.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
 	}
-	if started {
-		t.Fatal("module started with a typed nil resource")
+}
+
+func TestCancellationUnblocksBlockedPublisherAndSubscriber(t *testing.T) {
+	type measurement int
+	type heartbeat struct{}
+
+	publisherBlocked := make(chan struct{})
+	application, err := backplane.New(
+		// Publisher blocked in a bare send: the first value occupies the pump
+		// (its subscriber is busy elsewhere), so the second send blocks.
+		func(_ context.Context, measurements chan<- measurement) error {
+			measurements <- 1
+			close(publisherBlocked)
+			measurements <- 2
+			return nil
+		},
+		// Subscriber blocked receiving a topic that never produces a value.
+		func(_ context.Context, measurements <-chan measurement, heartbeats <-chan heartbeat) error {
+			<-heartbeats
+			for range measurements {
+			}
+			return nil
+		},
+		func(ctx context.Context, heartbeats chan<- heartbeat) error {
+			<-ctx.Done()
+			return nil
+		},
+		func(ctx context.Context) error {
+			<-publisherBlocked
+			return errBoom
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Run returning at all proves both blocked modules unwound.
+	if err := application.Run(context.Background()); !errors.Is(err, errBoom) {
+		t.Fatalf("Run() error = %v, want %v", err, errBoom)
+	}
+}
+
+func TestTopicToleratesModuleClosingItsPublisherChannel(t *testing.T) {
+	type update string
+
+	release := make(chan struct{})
+	var got update
+	application, err := backplane.New(
+		// Closing the channel is a fault backplane tolerates: the topic must
+		// not complete until this module actually returns, and the sibling
+		// publisher must be unaffected.
+		func(_ context.Context, updates chan<- update) error {
+			close(updates)
+			<-release
+			return nil
+		},
+		func(_ context.Context, updates chan<- update) error {
+			updates <- "still-delivered"
+			return nil
+		},
+		func(_ context.Context, updates <-chan update) error {
+			got = <-updates
+			close(release)
+			if _, open := <-updates; open {
+				return errors.New("received a value after every publisher finished")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := application.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got != "still-delivered" {
+		t.Fatalf("subscriber received %q, want %q", got, "still-delivered")
+	}
+}
+
+func TestRunValidatesResourcesBeforeStartingAnyModule(t *testing.T) {
+	type config struct{}
+	started := false
+
+	tests := []struct {
+		name      string
+		resources []any
+	}{
+		{"missing resource", nil},
+		{"typed nil resource", []any{(*config)(nil)}},
+		{"untyped nil resource", []any{nil}},
+		{"duplicate resources", []any{&config{}, &config{}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			application, err := backplane.New(
+				func(context.Context) error {
+					started = true
+					return nil
+				},
+				func(context.Context, *config) error {
+					started = true
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if err := application.Run(context.Background(), tt.resources...); err == nil {
+				t.Fatal("Run() accepted an invalid resource binding")
+			}
+			if started {
+				t.Fatal("a module started before every binding was validated")
+			}
+		})
 	}
 }
 
 func TestRunBindsConcreteResourcesToInterfaces(t *testing.T) {
 	var got namedResource
-	application, err := New(func(_ context.Context, resource namedResource) error {
-		got = resource
+	application, err := backplane.New(func(_ context.Context, store namedResource) error {
+		got = store
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	want := concreteResource("postgres")
+	want := postgresStore("postgres")
 	if err := application.Run(context.Background(), want); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -219,31 +464,36 @@ func TestRunBindsConcreteResourcesToInterfaces(t *testing.T) {
 	}
 }
 
-func TestRunValidatesEveryResourceBeforeStartingModules(t *testing.T) {
-	type config struct{}
-	started := false
-
-	application, err := New(
-		func(context.Context) error {
-			started = true
-			return nil
-		},
-		func(context.Context, *config) error {
-			started = true
-			return nil
-		},
-	)
+func TestRunRejectsAmbiguousResourceBindings(t *testing.T) {
+	application, err := backplane.New(func(context.Context, namedResource) error { return nil })
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if err := application.Run(context.Background()); err == nil {
-		t.Fatal("Run() succeeded without a required resource")
+	err = application.Run(context.Background(), postgresStore("a"), memoryStore("b"))
+	if err == nil {
+		t.Fatal("Run() accepted two resources satisfying the same parameter")
 	}
-	if started {
-		t.Fatal("a module started before all resource bindings were validated")
+	for _, want := range []string{"postgresStore", "memoryStore"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Run() error %q does not mention %s", err, want)
+		}
 	}
 }
+
+func TestRunRejectsUnusedResources(t *testing.T) {
+	application, err := backplane.New(func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	err = application.Run(context.Background(), postgresStore("orphan"))
+	if err == nil || !strings.Contains(err.Error(), "not used") {
+		t.Fatalf("Run() error = %v, want an unused-resource error", err)
+	}
+}
+
+type contextKey struct{}
 
 func TestRunInjectsContextAndResources(t *testing.T) {
 	type config struct {
@@ -254,7 +504,7 @@ func TestRunInjectsContextAndResources(t *testing.T) {
 	var gotContext context.Context
 	var gotConfig *config
 
-	application, err := New(func(ctx context.Context, cfg *config) error {
+	application, err := backplane.New(func(ctx context.Context, cfg *config) error {
 		gotContext = ctx
 		gotConfig = cfg
 		return nil
@@ -263,12 +513,12 @@ func TestRunInjectsContextAndResources(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
+	ctx := context.WithValue(context.Background(), contextKey{}, "marker")
 	if err := application.Run(ctx, want); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if gotContext == nil || gotContext.Value(struct{}{}) != "marker" {
+	if gotContext == nil || gotContext.Value(contextKey{}) != "marker" {
 		t.Fatal("module did not receive a context derived from the caller's context")
 	}
 	if gotConfig != want {
@@ -276,26 +526,32 @@ func TestRunInjectsContextAndResources(t *testing.T) {
 	}
 }
 
-func TestNewRejectsInvalidModuleSignatures(t *testing.T) {
-	var nilModule func(context.Context) error
+func TestBackplaneCanRunMoreThanOnce(t *testing.T) {
+	type ping struct{}
 
-	tests := []struct {
-		name   string
-		module any
-	}{
-		{"not a function", 42},
-		{"nil function", nilModule},
-		{"missing context", func() error { return nil }},
-		{"context is not first", func(int, context.Context) error { return nil }},
-		{"missing error result", func(context.Context) {}},
-		{"too many results", func(context.Context) (error, error) { return nil, nil }},
+	total := 0
+	application, err := backplane.New(
+		func(_ context.Context, pings chan<- ping) error {
+			pings <- ping{}
+			return nil
+		},
+		func(_ context.Context, pings <-chan ping) error {
+			for range pings {
+				total++
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.module); err == nil {
-				t.Fatal("New() succeeded with an invalid module signature")
-			}
-		})
+	for run := 0; run < 2; run++ {
+		if err := application.Run(context.Background()); err != nil {
+			t.Fatalf("Run() %d error = %v", run, err)
+		}
+	}
+	if total != 2 {
+		t.Fatalf("subscriber received %d values across two runs, want 2", total)
 	}
 }

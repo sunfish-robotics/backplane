@@ -1,0 +1,132 @@
+# backplane
+
+A small in-process application runtime for Go. You write modules as ordinary
+functions, and their signatures declare how they plug into the application:
+resources they need, topics they publish or subscribe to, and the shared
+lifecycle they run under. Backplane wires the modules together, runs them
+concurrently, and can render the resulting topology — all from the same
+declarations.
+
+```go
+type jobQueued struct{ ID string }
+type assignmentReady struct{ Job, Printer string }
+type jobFinished struct{ Job string }
+
+func syncBackend(ctx context.Context, store *jobStore, queued chan<- jobQueued) error {
+	for _, id := range store.Queued() {
+		queued <- jobQueued{ID: id}
+	}
+	return nil
+}
+
+func scheduleJobs(ctx context.Context, queued <-chan jobQueued, assignments chan<- assignmentReady) error {
+	for job := range queued {
+		assignments <- assignmentReady{Job: job.ID, Printer: "printer-1"}
+	}
+	return nil
+}
+
+func runJobs(ctx context.Context, assignments <-chan assignmentReady, finished chan<- jobFinished) error { … }
+func recordHistory(ctx context.Context, finished <-chan jobFinished) error { … }
+
+func main() {
+	application, err := backplane.New(syncBackend, scheduleJobs, runJobs, recordHistory)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// The caller owns resource construction and cleanup.
+	store := openJobStore()
+	defer store.Close()
+
+	if err := application.Run(context.Background(), store); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Each module is directly testable — call it with a context, a fake store, and
+channels you control. Registration never executes module code, so the same
+declarations also produce an architecture diagram without opening a single
+connection:
+
+```go
+fmt.Print(application.Graph().Mermaid())
+```
+
+```mermaid
+flowchart LR
+  n0["syncBackend"]
+  n1["scheduleJobs"]
+  n2["runJobs"]
+  n3["recordHistory"]
+  n4[("*main.jobStore")]
+  n5{{"main.assignmentReady"}}
+  n6{{"main.jobFinished"}}
+  n7{{"main.jobQueued"}}
+  n4 --> n0
+  n0 --> n7
+  n7 --> n1
+  n1 --> n5
+  n5 --> n2
+  n2 --> n6
+  n6 --> n3
+```
+
+## How wiring works
+
+A module is any `func(ctx context.Context, ...dependencies) error`. Each
+parameter after the context declares one dependency:
+
+| Parameter type | Meaning |
+| --- | --- |
+| `chan<- T` | publish to the topic carrying `T` |
+| `<-chan T` | subscribe to the topic carrying `T` |
+| `*backplane.Latest[T]` | observe the most recent `T` without backpressuring the topic |
+| anything else | a resource passed to `Run` by the caller |
+
+Topics are identified by the exact Go type flowing through them. Any number of
+modules can publish or subscribe to the same type; every subscriber receives
+every value. Resources bind by exact type first, otherwise by unique
+assignability, so a concrete value can satisfy an interface parameter. Nil,
+duplicate, ambiguous, missing, and unused resources are all rejected before
+any module starts.
+
+## Lifecycle
+
+`Run` starts every module under one [errgroup]: returning `nil` completes just
+that module, the first error cancels every sibling's context, and cancelling
+the context passed to `Run` shuts the whole application down. `Run` waits for
+all modules to return and reports the first error.
+
+Subscriber channels close once every publisher of the topic has returned, so
+`for value := range subscription` is the natural consumption loop. Backplane
+owns every channel it hands out: don't close them, and don't use them after
+returning.
+
+[errgroup]: https://pkg.go.dev/golang.org/x/sync/errgroup
+
+## Delivery semantics
+
+Delivery is in-process, memory-only, and backpressured: a publish blocks until
+every subscriber accepts the value, and cancellation may drop values that are
+in flight. Treat every send as potentially blocking. There is no durability,
+replay, retry, or acknowledgement — if work must survive a crash, persist it
+first and use the topic as a wake-up.
+
+`Latest[T]` is the explicit boundary between streams and state. It retains the
+newest value and its arrival time; `Watch` gives dynamic consumers (an HTTP
+handler, an SSE stream) latest-wins updates that may skip intermediate values
+but can never stall the publishers.
+
+## What backplane is not
+
+- **Not a message broker** — no persistence, cross-process transport, or QoS.
+- **Not a DI container** — the caller constructs resources and cleans them up;
+  backplane only binds already-created values.
+- **Not a process manager** — the module set is fixed before startup. A module
+  that needs dynamic workers spawns and joins its own goroutines.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).

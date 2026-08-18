@@ -3,8 +3,7 @@ package backplane
 import (
 	"fmt"
 	"reflect"
-	"runtime"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -17,7 +16,9 @@ const (
 	NodeTopic    NodeKind = "topic"
 )
 
-// EdgeKind identifies how two declarations are connected.
+// EdgeKind identifies how two declarations are connected: a resource feeding
+// a module, a module publishing to a topic, a topic delivering to a declared
+// subscriber, or a topic projected through a Latest.
 type EdgeKind string
 
 const (
@@ -27,27 +28,32 @@ const (
 	EdgeLatest    EdgeKind = "latest"
 )
 
-// Node is a module, caller-provided resource, or typed topic.
+// Node is a module, caller-provided resource, or typed topic. IDs are unique
+// within a graph; labels are human-readable and may repeat, for example when
+// the same function is registered twice.
 type Node struct {
 	ID    string
 	Kind  NodeKind
 	Label string
 }
 
-// Edge is a directed relationship between two nodes.
+// Edge is a directed relationship between two nodes, referenced by ID.
 type Edge struct {
 	From string
 	To   string
 	Kind EdgeKind
 }
 
-// Graph is the side-effect-free topology derived from module signatures.
+// Graph is the application topology derived from the module signatures — the
+// same declarations Run executes. It is deterministic for a given Backplane
+// and building it has no side effects and needs no resources.
 type Graph struct {
 	Nodes []Node
 	Edges []Edge
 }
 
-// Graph returns the declared topology without binding resources or starting modules.
+// Graph returns the declared topology without binding resources or starting
+// any module.
 func (b *Backplane) Graph() Graph {
 	graph := Graph{}
 	moduleIDs := make([]string, len(b.modules))
@@ -57,11 +63,7 @@ func (b *Backplane) Graph() Graph {
 	for index, m := range b.modules {
 		id := fmt.Sprintf("module:%d", index)
 		moduleIDs[index] = id
-		graph.Nodes = append(graph.Nodes, Node{
-			ID:    id,
-			Kind:  NodeModule,
-			Label: moduleName(m.fn),
-		})
+		graph.Nodes = append(graph.Nodes, Node{ID: id, Kind: NodeModule, Label: m.name})
 		for _, p := range m.params {
 			if p.kind == resourceParameter {
 				resourceTypes[p.typeOf] = struct{}{}
@@ -71,17 +73,15 @@ func (b *Backplane) Graph() Graph {
 		}
 	}
 
-	resources := sortedTypes(resourceTypes)
-	resourceIDs := make(map[reflect.Type]string, len(resources))
-	for index, resourceType := range resources {
+	resourceIDs := make(map[reflect.Type]string, len(resourceTypes))
+	for index, resourceType := range sortedTypes(resourceTypes) {
 		id := fmt.Sprintf("resource:%d", index)
 		resourceIDs[resourceType] = id
 		graph.Nodes = append(graph.Nodes, Node{ID: id, Kind: NodeResource, Label: resourceType.String()})
 	}
 
-	topics := sortedTypes(topicTypes)
-	topicIDs := make(map[reflect.Type]string, len(topics))
-	for index, topicType := range topics {
+	topicIDs := make(map[reflect.Type]string, len(topicTypes))
+	for index, topicType := range sortedTypes(topicTypes) {
 		id := fmt.Sprintf("topic:%d", index)
 		topicIDs[topicType] = id
 		graph.Nodes = append(graph.Nodes, Node{ID: id, Kind: NodeTopic, Label: topicType.String()})
@@ -106,7 +106,9 @@ func (b *Backplane) Graph() Graph {
 	return graph
 }
 
-// Mermaid renders the graph as a Mermaid flowchart.
+// Mermaid renders the graph as a Mermaid flowchart: modules as rectangles,
+// resources as cylinders, topics as hexagons, with latest-wins projections
+// labelled on their edges.
 func (g Graph) Mermaid() string {
 	var output strings.Builder
 	output.WriteString("flowchart LR\n")
@@ -139,29 +141,13 @@ func (g Graph) Mermaid() string {
 	return output.String()
 }
 
-func moduleName(function reflect.Value) string {
-	definition := runtime.FuncForPC(function.Pointer())
-	if definition == nil {
-		return function.Type().String()
-	}
-
-	name := strings.TrimSuffix(definition.Name(), "-fm")
-	if slash := strings.LastIndex(name, "/"); slash >= 0 {
-		name = name[slash+1:]
-	}
-	if dot := strings.IndexByte(name, '.'); dot >= 0 {
-		name = name[dot+1:]
-	}
-	return name
-}
-
 func sortedTypes(set map[reflect.Type]struct{}) []reflect.Type {
 	types := make([]reflect.Type, 0, len(set))
 	for typeOf := range set {
 		types = append(types, typeOf)
 	}
-	sort.Slice(types, func(i, j int) bool {
-		return typeIdentity(types[i]) < typeIdentity(types[j])
+	slices.SortFunc(types, func(a, b reflect.Type) int {
+		return strings.Compare(typeIdentity(a), typeIdentity(b))
 	})
 	return types
 }
@@ -170,8 +156,12 @@ func typeIdentity(typeOf reflect.Type) string {
 	return typeOf.PkgPath() + "\x00" + typeOf.String()
 }
 
+// escapeMermaid neutralises characters that break quoted Mermaid labels.
+// Mermaid uses HTML-entity style escapes, not backslashes; '#' is escaped
+// first so the replacement codes themselves survive.
 func escapeMermaid(value string) string {
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	value = strings.ReplaceAll(value, "\"", "\\\"")
+	value = strings.ReplaceAll(value, "#", "#35;")
+	value = strings.ReplaceAll(value, "\\", "#92;")
+	value = strings.ReplaceAll(value, "\"", "#quot;")
 	return strings.ReplaceAll(value, "\n", " ")
 }
