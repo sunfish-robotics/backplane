@@ -1,11 +1,21 @@
 # backplane
 
+[![CI][ci-badge]][ci]
+[![Go Reference][reference-badge]][go-reference]
+[![License: Apache-2.0][license-badge]][license]
+
 A small in-process application runtime for Go. You write modules as ordinary
 functions, and their signatures declare how they plug into the application:
 resources they need, topics they publish or subscribe to, and the shared
 lifecycle they run under. Backplane wires the modules together, runs them
 concurrently, and can render the resulting topology — all from the same
 declarations.
+
+## Installation
+
+```console
+go get github.com/sunfish-robotics/backplane
+```
 
 ```go
 type jobQueued struct{ ID string }
@@ -129,6 +139,18 @@ but can never stall the publishers.
 - **Not a process manager** — the module set is fixed before startup. A module
   that needs dynamic workers spawns and joins its own goroutines.
 
+## Stability
+
+Backplane requires Go 1.25 or later. It is pre-1.0, so its public API may change
+while it is validated in production applications.
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+[ci]: https://github.com/sunfish-robotics/backplane/actions/workflows/ci.yml
+[ci-badge]: https://github.com/sunfish-robotics/backplane/actions/workflows/ci.yml/badge.svg
+[go-reference]: https://pkg.go.dev/github.com/sunfish-robotics/backplane
+[license]: LICENSE
+[license-badge]: https://img.shields.io/badge/license-Apache--2.0-blue.svg
+[reference-badge]: https://pkg.go.dev/badge/github.com/sunfish-robotics/backplane.svg
