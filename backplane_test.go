@@ -3,9 +3,11 @@ package backplane_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Michael-F-Bryan/backplane"
 )
@@ -96,6 +98,41 @@ func TestRunConnectsTypedPublishersAndSubscribers(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != "job-123" {
 		t.Fatalf("subscriber received %#v", got)
+	}
+}
+
+func TestPublishReturnsBeforeSubscriberAcceptsValue(t *testing.T) {
+	type update int
+
+	sendReturned := make(chan struct{})
+	application, err := backplane.New(
+		func(_ context.Context, updates chan<- update) error {
+			updates <- 42
+			close(sendReturned)
+			return nil
+		},
+		func(ctx context.Context, updates <-chan update) error {
+			select {
+			case <-sendReturned:
+				// The topic pump has accepted the value, but this subscriber has
+				// deliberately not accepted it yet.
+			case <-ctx.Done():
+				return errors.New("publish waited for downstream delivery")
+			}
+			if got := <-updates; got != 42 {
+				return fmt.Errorf("subscriber received %d, want 42", got)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 

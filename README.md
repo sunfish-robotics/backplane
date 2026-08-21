@@ -108,11 +108,13 @@ returning.
 
 ## Delivery semantics
 
-Delivery is in-process, memory-only, and backpressured: a publish blocks until
-every subscriber accepts the value, and cancellation may drop values that are
-in flight. Treat every send as potentially blocking. There is no durability,
-replay, retry, or acknowledgement — if work must survive a crash, persist it
-first and use the topic as a wake-up.
+Delivery is in-process, memory-only, and backpressured. The topic pump holds at
+most one value in flight: a send returns when the pump accepts the value, which
+may be before every subscriber accepts it, but the pump cannot accept another
+publication while a slow subscriber blocks delivery. Treat every send as
+potentially blocking. Cancellation may drop values that are in flight. There
+is no durability, replay, retry, or acknowledgement — if work must survive a
+crash, persist it first and use the topic as a wake-up.
 
 `Latest[T]` is the explicit boundary between streams and state. It retains the
 newest value and its arrival time; `Watch` gives dynamic consumers (an HTTP
@@ -122,8 +124,8 @@ but can never stall the publishers.
 ## What backplane is not
 
 - **Not a message broker** — no persistence, cross-process transport, or QoS.
-- **Not a DI container** — the caller constructs resources and cleans them up;
-  backplane only binds already-created values.
+- **Not a resource construction or lifecycle container** — the caller creates
+  resources and cleans them up; backplane only binds already-created values.
 - **Not a process manager** — the module set is fixed before startup. A module
   that needs dynamic workers spawns and joins its own goroutines.
 

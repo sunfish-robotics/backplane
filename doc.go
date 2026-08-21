@@ -37,10 +37,13 @@
 // A topic is identified by the exact Go type flowing through it. Any number
 // of modules may publish or subscribe to the same type, and every subscriber
 // receives every published value. Delivery is in-process, memory-only, and
-// backpressured: a publish blocks until every subscriber has accepted the
-// value, so modules must treat every send as potentially blocking. There is
-// no durability, replay, retry, acknowledgement, or promised buffer size; if
-// work must survive a crash, persist it first and use the topic as a wake-up.
+// backpressured. The topic pump holds at most one value in flight: a send
+// returns when the pump accepts the value, which may be before every subscriber
+// accepts it, but the pump cannot accept another publication while a slow
+// subscriber blocks delivery. Modules must therefore treat every send as
+// potentially blocking. There is no durability, replay, retry, or
+// acknowledgement; if work must survive a crash, persist it first and use the
+// topic as a wake-up.
 //
 // Backplane owns every channel it passes to a module and closes subscriber
 // channels once the topic completes, so ranging over a subscription is the
