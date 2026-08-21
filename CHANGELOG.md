@@ -2,7 +2,22 @@
 
 ## 0.1.0 (2026-08-21)
 
+Initial public release of Backplane, a small in-process application runtime for Go.
 
-### Bug Fixes
+### Runtime
 
-* document topic backpressure accurately ([14a2a32](https://github.com/sunfish-robotics/backplane/commit/14a2a32ecb8427ca058603cf41c492a7fa5f2e68))
+- Declare modules as ordinary `func(context.Context, ...dependencies) error` functions. Channel directions declare typed publishers and subscribers; other parameters declare caller-owned resources.
+- Validate module signatures, topic producers, and resource bindings before any module starts. Concrete resources can satisfy interface parameters when the match is unambiguous.
+- Run a fixed module set concurrently under one shared context. The first module error cancels its siblings, waits for them to return, and reports the failing module by name.
+
+### Topics and state
+
+- Fan values from multiple publishers to every live subscriber of the same exact Go type. The topic pump accepts at most one value at a time, so slow subscribers apply backpressure to subsequent publications.
+- Close subscriptions after every publisher has returned, remove subscriptions whose module has already stopped, and drain and drop publications during cancellation so blocked publishers can unwind.
+- Provide `Latest[T]` for current-state consumers, with timestamped `Load` access and non-backpressuring, latest-wins `Watch` notifications.
+
+### Topology and documentation
+
+- Derive a deterministic graph of modules, resources, and topics from the same declarations used at runtime, without starting modules or constructing resources.
+- Render the topology as a Mermaid flowchart.
+- Document the lifecycle, ownership, and delivery contracts with package documentation and executable examples.
