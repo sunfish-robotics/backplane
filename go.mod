@@ -1,4 +1,4 @@
-module github.com/Michael-F-Bryan/backplane
+module github.com/sunfish-robotics/backplane
 
 go 1.25.0
 

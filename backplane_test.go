@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Michael-F-Bryan/backplane"
+	"github.com/sunfish-robotics/backplane"
 )
 
 type namedResource interface {
