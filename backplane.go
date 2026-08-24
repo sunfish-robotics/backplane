@@ -166,7 +166,7 @@ func (b *Backplane) Run(ctx context.Context, resources ...any) error {
 		module    module
 		args      []reflect.Value
 		done      chan struct{} // closed when the module returns; created if it subscribes
-		published []*topic
+		published []*publisherEndpoint
 	}
 	invocations := make([]invocation, 0, len(b.modules))
 	for _, m := range b.modules {
@@ -182,8 +182,9 @@ func (b *Backplane) Run(ctx context.Context, resources ...any) error {
 				inv.args = append(inv.args, value)
 			case publisherParameter:
 				t := topicFor(p.topicType)
-				inv.args = append(inv.args, t.addPublisher(p.typeOf))
-				inv.published = append(inv.published, t)
+				channel, publisher := t.addPublisher(p.typeOf)
+				inv.args = append(inv.args, channel)
+				inv.published = append(inv.published, publisher)
 			case subscriberParameter:
 				if inv.done == nil {
 					inv.done = make(chan struct{})
@@ -211,8 +212,8 @@ func (b *Backplane) Run(ctx context.Context, resources ...any) error {
 				if inv.done != nil {
 					close(inv.done)
 				}
-				for _, t := range inv.published {
-					t.publisherDone()
+				for _, publisher := range inv.published {
+					publisher.complete()
 				}
 			}()
 			result := inv.module.fn.Call(inv.args)[0].Interface()

@@ -427,15 +427,52 @@ func TestCancellationUnblocksBlockedPublisherAndSubscriber(t *testing.T) {
 	}
 }
 
-func TestTopicToleratesModuleClosingItsPublisherChannel(t *testing.T) {
+func TestPublisherCloseCompletesTopicBeforeModuleReturns(t *testing.T) {
+	type update int
+
+	subscriberDone := make(chan struct{})
+	var got []update
+	application, err := backplane.New(
+		func(ctx context.Context, updates chan<- update) error {
+			updates <- 42
+			close(updates)
+			select {
+			case <-subscriberDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+		func(_ context.Context, updates <-chan update) error {
+			for value := range updates {
+				got = append(got, value)
+			}
+			close(subscriberDone)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if want := []update{42}; !slices.Equal(got, want) {
+		t.Fatalf("subscriber received %v, want %v", got, want)
+	}
+}
+
+func TestClosingPublisherDoesNotAffectSiblingPublisher(t *testing.T) {
 	type update string
 
 	release := make(chan struct{})
 	var got update
 	application, err := backplane.New(
-		// Closing the channel is a fault backplane tolerates: the topic must
-		// not complete until this module actually returns, and the sibling
-		// publisher must be unaffected.
+		// Closing one publisher retires only that endpoint. The sibling must
+		// still deliver, and the topic may complete while this module remains.
 		func(_ context.Context, updates chan<- update) error {
 			close(updates)
 			<-release
