@@ -107,12 +107,15 @@ any module starts.
 `Run` starts every module under one [errgroup]: returning `nil` completes just
 that module, the first error cancels every sibling's context, and cancelling
 the context passed to `Run` shuts the whole application down. `Run` waits for
-all modules to return and reports the first error.
+all modules to return. A module error takes precedence; otherwise it returns
+the caller's context error, which is `nil` after natural completion.
 
-Subscriber channels close once every publisher of the topic has returned, so
-`for value := range subscription` is the natural consumption loop. Backplane
-owns every channel it hands out: don't close them, and don't use them after
-returning.
+A module may close a publisher channel when it has finished publishing. A
+publisher completes when its channel is closed or its module returns, whichever
+happens first. Once every publisher completes, Backplane closes the subscriber
+channels, so `for value := range subscription` is the natural consumption loop.
+Closing one publisher does not affect its peers. Don't close subscriber
+channels, send after closing a publisher, or use any channel after returning.
 
 [errgroup]: https://pkg.go.dev/golang.org/x/sync/errgroup
 

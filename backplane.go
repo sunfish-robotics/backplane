@@ -141,8 +141,9 @@ func validateTopics(modules []module) error {
 
 // Run binds the supplied resources to the declared module parameters,
 // validates every binding, then starts all modules concurrently under one
-// errgroup. It returns once every module has returned, reporting the first
-// module error. See the package documentation for the lifecycle contract.
+// errgroup. It returns once every module has returned. A module error takes
+// precedence; otherwise Run returns ctx.Err(), which is nil after natural
+// completion. See the package documentation for the lifecycle contract.
 func (b *Backplane) Run(ctx context.Context, resources ...any) error {
 	bindings, err := indexResources(resources)
 	if err != nil {

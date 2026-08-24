@@ -45,26 +45,31 @@
 // acknowledgement; if work must survive a crash, persist it first and use the
 // topic as a wake-up.
 //
-// Backplane owns every channel it passes to a module and closes subscriber
-// channels once the topic completes, so ranging over a subscription is the
-// natural consumption loop. A topic completes when every module holding a
-// publisher for it has returned. Modules must not close the channels they
-// are given or use them after returning; closing a publisher makes later
-// sends by that module panic (a programmer fault), though other publishers
-// on the topic are unaffected. A module that returns while values are still
-// flowing simply stops participating: its subscriptions are dropped so it
-// cannot backpressure the topic from beyond the grave.
+// A module may close a publisher channel when it has finished publishing. A
+// publisher completes when its channel is closed or its module returns,
+// whichever happens first, and a topic completes once every publisher has
+// completed. Backplane then closes the subscriber channels, so ranging over a
+// subscription is the natural consumption loop. Subject to cancellation,
+// values accepted before the final publisher completes are delivered before
+// subscribers close.
+//
+// Closing one publisher does not affect other publishers on the topic. Sending
+// after closing a publisher panics, as usual in Go. Modules must not close
+// subscriber channels or use any channel after returning. A module that returns
+// while values are still flowing simply stops participating: its subscriptions
+// are dropped so it cannot backpressure the topic from beyond the grave.
 //
 // # Lifecycle
 //
 // Run starts every module in one [golang.org/x/sync/errgroup.Group].
 // Returning nil completes only that module; the first non-nil error cancels
 // the shared context, and cancelling the context passed to Run stops the
-// runtime. Run waits for every module to return and reports the first module
-// error, wrapped with the module's name. After cancellation, publishes are
-// drained and dropped so blocked senders can unwind, but every module is
-// still responsible for observing ctx and returning promptly. Panics are
-// programmer faults and are not recovered.
+// runtime. Run waits for every module to return. It reports the first module
+// error, wrapped with the module's name; if no module fails, it returns the
+// caller's context error, which is nil after natural completion. After
+// cancellation, publishes are drained and dropped so blocked senders can
+// unwind, but every module is still responsible for observing ctx and returning
+// promptly. Panics are programmer faults and are not recovered.
 //
 // # Latest
 //
