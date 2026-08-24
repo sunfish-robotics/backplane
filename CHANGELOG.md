@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/sunfish-robotics/backplane/compare/v0.1.0...v0.2.0) (2026-08-24)
+
+
+### Features
+
+* complete topics when publishers close ([43d1dbd](https://github.com/sunfish-robotics/backplane/commit/43d1dbddf5ae601a271167b45f70825a94339773))
+
+
+### Bug Fixes
+
+* return caller cancellation after clean shutdown ([59b8599](https://github.com/sunfish-robotics/backplane/commit/59b8599cf0ee0cc9583a07a265abff68486457b6))
+
 ## 0.1.0 (2026-08-21)
 
 Initial public release of Backplane, a small in-process application runtime for Go.
