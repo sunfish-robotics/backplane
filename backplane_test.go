@@ -365,6 +365,28 @@ func TestParentCancellationStopsRun(t *testing.T) {
 	}
 }
 
+func TestParentCancellationReturnedWhenModulesStopCleanly(t *testing.T) {
+	started := make(chan struct{})
+	application, err := backplane.New(func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	if err := application.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestCancellationUnblocksBlockedPublisherAndSubscriber(t *testing.T) {
 	type measurement int
 	type heartbeat struct{}

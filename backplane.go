@@ -222,7 +222,10 @@ func (b *Backplane) Run(ctx context.Context, resources ...any) error {
 			return fmt.Errorf("module %s: %w", inv.module.name, result.(error))
 		})
 	}
-	return group.Wait()
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // resourceSet holds the values passed to Run in declaration order so that
