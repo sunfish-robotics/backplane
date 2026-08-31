@@ -57,7 +57,7 @@ func main() {
 
 Each module is directly testable — call it with a context, a fake store, and
 channels you control. Registration never executes module code, so the same
-declarations also produce an architecture diagram without opening a single
+declarations also produce a top-to-bottom dataflow without opening a single
 connection:
 
 ```go
@@ -65,22 +65,38 @@ fmt.Print(application.Graph().Mermaid())
 ```
 
 ```mermaid
-flowchart LR
-  n0["syncBackend"]
-  n1["scheduleJobs"]
-  n2["runJobs"]
-  n3["recordHistory"]
-  n4[("*main.jobStore")]
+flowchart TB
+  n0["main.syncBackend"]
+  n1["main.scheduleJobs"]
+  n2["main.runJobs"]
+  n3["main.recordHistory"]
   n5{{"main.assignmentReady"}}
   n6{{"main.jobFinished"}}
   n7{{"main.jobQueued"}}
-  n4 --> n0
   n0 --> n7
   n7 --> n1
   n1 --> n5
   n5 --> n2
   n2 --> n6
   n6 --> n3
+  classDef module fill:#e8f1ff,stroke:#2563eb,color:#111827
+  classDef resource fill:#f8fafc,stroke:#64748b,color:#111827
+  classDef topic fill:#f5f3ff,stroke:#7c3aed,color:#111827
+  class n0,n1,n2,n3 module
+  class n5,n6,n7 topic
+```
+
+Caller-provided resources are omitted from the default diagram so dependency
+injection does not obscure the topic flow. `MermaidWith` can include them or
+change the flowchart direction. `Include` narrows a graph to selected modules,
+their output topics, and every transitive dependency that feeds them:
+
+```go
+focused, err := application.Graph().Include("scheduleJobs")
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Print(focused.MermaidWith(backplane.MermaidOptions{Resources: true}))
 ```
 
 ## How wiring works

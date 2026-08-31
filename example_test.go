@@ -71,22 +71,25 @@ func ExampleBackplane_Graph() {
 
 	fmt.Print(application.Graph().Mermaid())
 	// Output:
-	// flowchart LR
-	//   n0["syncBackend"]
-	//   n1["scheduleJobs"]
-	//   n2["runJobs"]
-	//   n3["recordHistory"]
-	//   n4[("*backplane_test.jobStore")]
+	// flowchart TB
+	//   n0["backplane_test.syncBackend"]
+	//   n1["backplane_test.scheduleJobs"]
+	//   n2["backplane_test.runJobs"]
+	//   n3["backplane_test.recordHistory"]
 	//   n5{{"backplane_test.assignmentReady"}}
 	//   n6{{"backplane_test.jobFinished"}}
 	//   n7{{"backplane_test.jobQueued"}}
-	//   n4 --> n0
 	//   n0 --> n7
 	//   n7 --> n1
 	//   n1 --> n5
 	//   n5 --> n2
 	//   n2 --> n6
 	//   n6 --> n3
+	//   classDef module fill:#e8f1ff,stroke:#2563eb,color:#111827
+	//   classDef resource fill:#f8fafc,stroke:#64748b,color:#111827
+	//   classDef topic fill:#f5f3ff,stroke:#7c3aed,color:#111827
+	//   class n0,n1,n2,n3 module
+	//   class n5,n6,n7 topic
 }
 
 func ExampleLatest() {

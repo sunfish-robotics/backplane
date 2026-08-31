@@ -43,10 +43,10 @@ func TestGraphComesFromDeclarationsWithoutResources(t *testing.T) {
 	}
 
 	store := findNode(t, graph, backplane.NodeResource, "backplane_test.graphStore")
-	syncBackend := findNode(t, graph, backplane.NodeModule, "graphSyncBackend")
+	syncBackend := findNode(t, graph, backplane.NodeModule, "backplane_test.graphSyncBackend")
 	queueChanged := findNode(t, graph, backplane.NodeTopic, "backplane_test.graphQueueChanged")
-	scheduleJobs := findNode(t, graph, backplane.NodeModule, "graphScheduleJobs")
-	serveHTTP := findNode(t, graph, backplane.NodeModule, "graphServeHTTP")
+	scheduleJobs := findNode(t, graph, backplane.NodeModule, "backplane_test.graphScheduleJobs")
+	serveHTTP := findNode(t, graph, backplane.NodeModule, "backplane_test.graphServeHTTP")
 
 	assertEdge(t, graph, store.ID, syncBackend.ID, backplane.EdgeResource)
 	assertEdge(t, graph, syncBackend.ID, queueChanged.ID, backplane.EdgePublish)
@@ -83,7 +83,7 @@ func TestGraphKeepsDuplicateModulesDistinct(t *testing.T) {
 			t.Fatalf("Graph() reused node ID %q", node.ID)
 		}
 		seenIDs[node.ID] = true
-		if node.Kind == backplane.NodeModule && node.Label == "graphSyncBackend" {
+		if node.Kind == backplane.NodeModule && node.Label == "backplane_test.graphSyncBackend" {
 			duplicates = append(duplicates, node)
 		}
 	}
@@ -100,17 +100,178 @@ func TestGraphRendersMermaid(t *testing.T) {
 
 	mermaid := application.Graph().Mermaid()
 	for _, want := range []string{
-		"flowchart LR",
-		"graphSyncBackend",
-		"graphScheduleJobs",
-		"graphServeHTTP",
-		"backplane_test.graphStore",
+		"flowchart TB",
+		"backplane_test.graphSyncBackend",
+		"backplane_test.graphScheduleJobs",
+		"backplane_test.graphServeHTTP",
 		"backplane_test.graphQueueChanged",
-		"-->|latest|",
+		"-.->|latest|",
+		"classDef module",
+		"classDef topic",
 	} {
 		if !strings.Contains(mermaid, want) {
 			t.Fatalf("Mermaid() output does not contain %q:\n%s", want, mermaid)
 		}
+	}
+	if strings.Contains(mermaid, "backplane_test.graphStore") {
+		t.Fatalf("Mermaid() included resources by default:\n%s", mermaid)
+	}
+}
+
+func TestMermaidCanIncludeResources(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend, graphScheduleJobs)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	mermaid := application.Graph().MermaidWith(backplane.MermaidOptions{Resources: true})
+	for _, want := range []string{
+		`("backplane_test.graphStore")`,
+		"classDef resource",
+	} {
+		if !strings.Contains(mermaid, want) {
+			t.Fatalf("MermaidWith() output does not contain %q:\n%s", want, mermaid)
+		}
+	}
+}
+
+func TestMermaidCanRenderLeftToRight(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	mermaid := application.Graph().MermaidWith(backplane.MermaidOptions{
+		Direction: backplane.MermaidLeftToRight,
+	})
+	if !strings.HasPrefix(mermaid, "flowchart LR\n") {
+		t.Fatalf("MermaidWith() did not render left to right:\n%s", mermaid)
+	}
+}
+
+func TestMermaidShortensImportPathsInsideGenericTypes(t *testing.T) {
+	graph := backplane.Graph{Nodes: []backplane.Node{{
+		ID:    "topic:0",
+		Kind:  backplane.NodeTopic,
+		Label: "mavlink.MessageOf[*github.com/bluenviron/gomavlib/v3/pkg/dialects/common.MessageAttitude]",
+	}}}
+
+	mermaid := graph.Mermaid()
+	if !strings.Contains(mermaid, "mavlink.MessageOf[*common.MessageAttitude]") {
+		t.Fatalf("Mermaid() did not shorten the generic type label:\n%s", mermaid)
+	}
+	if strings.Contains(mermaid, "github.com/bluenviron") {
+		t.Fatalf("Mermaid() retained an import path in the display label:\n%s", mermaid)
+	}
+}
+
+func TestGraphIncludeWithoutSelectorsReturnsEverything(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend, graphScheduleJobs, graphServeHTTP)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	graph := application.Graph()
+
+	selected, err := graph.Include()
+	if err != nil {
+		t.Fatalf("Include() error = %v", err)
+	}
+	if !reflect.DeepEqual(selected, graph) {
+		t.Fatalf("Include() = %#v, want complete graph %#v", selected, graph)
+	}
+}
+
+func TestGraphIncludeKeepsSelectedOutputsAndTransitiveDependencies(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend, graphScheduleJobs, graphServeHTTP)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	graph, err := application.Graph().Include("graphScheduleJobs")
+	if err != nil {
+		t.Fatalf("Include() error = %v", err)
+	}
+
+	store := findNode(t, graph, backplane.NodeResource, "backplane_test.graphStore")
+	syncBackend := findNode(t, graph, backplane.NodeModule, "backplane_test.graphSyncBackend")
+	queueChanged := findNode(t, graph, backplane.NodeTopic, "backplane_test.graphQueueChanged")
+	scheduleJobs := findNode(t, graph, backplane.NodeModule, "backplane_test.graphScheduleJobs")
+	assignmentReady := findNode(t, graph, backplane.NodeTopic, "backplane_test.graphAssignmentReady")
+
+	assertEdge(t, graph, store.ID, syncBackend.ID, backplane.EdgeResource)
+	assertEdge(t, graph, syncBackend.ID, queueChanged.ID, backplane.EdgePublish)
+	assertEdge(t, graph, queueChanged.ID, scheduleJobs.ID, backplane.EdgeSubscribe)
+	assertEdge(t, graph, scheduleJobs.ID, assignmentReady.ID, backplane.EdgePublish)
+
+	for _, node := range graph.Nodes {
+		if node.Label == "backplane_test.graphServeHTTP" {
+			t.Fatalf("Include() retained downstream module %#v", node)
+		}
+	}
+}
+
+func TestGraphIncludeAcceptsQualifiedModuleNames(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend, graphScheduleJobs)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	graph, err := application.Graph().Include("backplane_test.graphSyncBackend")
+	if err != nil {
+		t.Fatalf("Include() error = %v", err)
+	}
+	findNode(t, graph, backplane.NodeModule, "backplane_test.graphSyncBackend")
+	for _, node := range graph.Nodes {
+		if node.Label == "backplane_test.graphScheduleJobs" {
+			t.Fatalf("Include() retained downstream module %#v", node)
+		}
+	}
+}
+
+func TestGraphIncludeUnionsRepeatedSelectors(t *testing.T) {
+	graph := backplane.Graph{
+		Nodes: []backplane.Node{
+			{ID: "module:0", Kind: backplane.NodeModule, Label: "alpha.Run"},
+			{ID: "module:1", Kind: backplane.NodeModule, Label: "beta.Run"},
+			{ID: "topic:0", Kind: backplane.NodeTopic, Label: "alpha.Output"},
+			{ID: "topic:1", Kind: backplane.NodeTopic, Label: "beta.Output"},
+		},
+		Edges: []backplane.Edge{
+			{From: "module:0", To: "topic:0", Kind: backplane.EdgePublish},
+			{From: "module:1", To: "topic:1", Kind: backplane.EdgePublish},
+		},
+	}
+
+	selected, err := graph.Include("alpha.Run", "beta.Run")
+	if err != nil {
+		t.Fatalf("Include() error = %v", err)
+	}
+	if !reflect.DeepEqual(selected, graph) {
+		t.Fatalf("Include() = %#v, want union %#v", selected, graph)
+	}
+}
+
+func TestGraphIncludeRejectsAmbiguousShortNames(t *testing.T) {
+	graph := backplane.Graph{Nodes: []backplane.Node{
+		{ID: "module:0", Kind: backplane.NodeModule, Label: "alpha.Run"},
+		{ID: "module:1", Kind: backplane.NodeModule, Label: "beta.Run"},
+	}}
+
+	_, err := graph.Include("Run")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("Include() error = %v, want ambiguous selector", err)
+	}
+}
+
+func TestGraphIncludeRejectsUnknownModules(t *testing.T) {
+	application, err := backplane.New(graphSyncBackend)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = application.Graph().Include("missing")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Include() error = %v, want module not found", err)
 	}
 }
 
