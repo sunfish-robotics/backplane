@@ -300,9 +300,19 @@ func isNil(value reflect.Value) bool {
 }
 
 // moduleName reports a short human-readable name for a module function,
-// e.g. "ScheduleJobs" or "Server.Run". It is best-effort: closures come out
-// as names like "main.func1" and duplicates are allowed.
+// e.g. "ScheduleJobs" or "Server.Run". It is best-effort and duplicates are
+// allowed.
 func moduleName(function reflect.Value) string {
+	name := qualifiedModuleName(function)
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		return name[dot+1:]
+	}
+	return name
+}
+
+// qualifiedModuleName retains the package name so graphs can show which part
+// of an application owns a module without exposing its full import path.
+func qualifiedModuleName(function reflect.Value) string {
 	definition := runtime.FuncForPC(function.Pointer())
 	if definition == nil {
 		return function.Type().String()
@@ -311,9 +321,6 @@ func moduleName(function reflect.Value) string {
 	name := strings.TrimSuffix(definition.Name(), "-fm")
 	if slash := strings.LastIndex(name, "/"); slash >= 0 {
 		name = name[slash+1:]
-	}
-	if dot := strings.IndexByte(name, '.'); dot >= 0 {
-		name = name[dot+1:]
 	}
 	return name
 }
