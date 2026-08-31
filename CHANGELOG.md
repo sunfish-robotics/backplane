@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/sunfish-robotics/backplane/compare/v0.2.0...v0.3.0) (2026-08-31)
+
+
+### Features
+
+* make Mermaid graphs easier to read ([36f44c2](https://github.com/sunfish-robotics/backplane/commit/36f44c2c69ca731d4aa9e7bce29d9a8fd1a00fe4))
+* make Mermaid graphs easier to read ([260a895](https://github.com/sunfish-robotics/backplane/commit/260a895551e0c60b291acac3c413795cec9435a1))
+
 ## [0.2.0](https://github.com/sunfish-robotics/backplane/compare/v0.1.0...v0.2.0) (2026-08-24)
 
 
