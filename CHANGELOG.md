@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/sunfish-robotics/backplane/compare/v0.3.0...v0.4.0) (2026-09-01)
+
+
+### Features
+
+* construct Latest from channels ([1ae42c4](https://github.com/sunfish-robotics/backplane/commit/1ae42c4fd38a1d0523c271619d0c081e6d60344b))
+* construct Latest from channels ([c5c6361](https://github.com/sunfish-robotics/backplane/commit/c5c63613391545ee20bdcd32f258b499bd4287e2))
+
 ## [0.3.0](https://github.com/sunfish-robotics/backplane/compare/v0.2.0...v0.3.0) (2026-08-31)
 
 
