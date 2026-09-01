@@ -61,7 +61,7 @@ declarations also produce a top-to-bottom dataflow without opening a single
 connection:
 
 ```go
-fmt.Print(application.Graph().Mermaid())
+fmt.Print(mermaid.Render(application.Graph()))
 ```
 
 ```mermaid
@@ -87,16 +87,18 @@ flowchart TB
 ```
 
 Caller-provided resources are omitted from the default diagram so dependency
-injection does not obscure the topic flow. `MermaidWith` can include them or
-change the flowchart direction. `Include` narrows a graph to selected modules,
-their output topics, and every transitive dependency that feeds them:
+injection does not obscure the topic flow. The
+[`mermaid`](https://pkg.go.dev/github.com/sunfish-robotics/backplane/mermaid)
+package's `RenderWith` function can include them or change the flowchart
+direction. `Include` narrows a graph to selected modules, their output topics,
+and every transitive dependency that feeds them:
 
 ```go
 focused, err := application.Graph().Include("scheduleJobs")
 if err != nil {
 	log.Fatal(err)
 }
-fmt.Print(focused.MermaidWith(backplane.MermaidOptions{Resources: true}))
+fmt.Print(mermaid.RenderWith(focused, mermaid.Options{Resources: true}))
 ```
 
 ## How wiring works

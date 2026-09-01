@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 )
@@ -239,92 +238,6 @@ func shortModuleName(name string) string {
 	return name
 }
 
-// MermaidDirection controls the direction of a rendered Mermaid flowchart.
-type MermaidDirection string
-
-const (
-	MermaidTopToBottom MermaidDirection = "TB"
-	MermaidBottomToTop MermaidDirection = "BT"
-	MermaidLeftToRight MermaidDirection = "LR"
-	MermaidRightToLeft MermaidDirection = "RL"
-)
-
-// MermaidOptions controls optional details of Mermaid rendering. The zero value
-// renders a top-to-bottom dataflow without caller-provided resources.
-type MermaidOptions struct {
-	// Direction defaults to MermaidTopToBottom.
-	Direction MermaidDirection
-	// Resources includes caller-provided resources and their dependency edges.
-	Resources bool
-}
-
-// Mermaid renders the graph as a top-to-bottom Mermaid dataflow. Modules are
-// rectangles, topics are hexagons, resources are omitted, and latest-wins
-// projections use labelled dashed edges.
-func (g Graph) Mermaid() string {
-	return g.MermaidWith(MermaidOptions{})
-}
-
-// MermaidWith renders the graph as a Mermaid flowchart using options.
-func (g Graph) MermaidWith(options MermaidOptions) string {
-	var output strings.Builder
-	direction := options.Direction
-	if direction == "" {
-		direction = MermaidTopToBottom
-	}
-	fmt.Fprintf(&output, "flowchart %s\n", direction)
-
-	mermaidIDs := make(map[string]string, len(g.Nodes))
-	classes := make(map[NodeKind][]string)
-	for index, node := range g.Nodes {
-		if node.Kind == NodeResource && !options.Resources {
-			continue
-		}
-		id := fmt.Sprintf("n%d", index)
-		mermaidIDs[node.ID] = id
-		classes[node.Kind] = append(classes[node.Kind], id)
-		label := escapeMermaid(shortenImportPaths(node.Label))
-		switch node.Kind {
-		case NodeModule:
-			fmt.Fprintf(&output, "  %s[\"%s\"]\n", id, label)
-		case NodeResource:
-			fmt.Fprintf(&output, "  %s(\"%s\")\n", id, label)
-		case NodeTopic:
-			fmt.Fprintf(&output, "  %s{{\"%s\"}}\n", id, label)
-		}
-	}
-
-	for _, edge := range g.Edges {
-		from, fromVisible := mermaidIDs[edge.From]
-		to, toVisible := mermaidIDs[edge.To]
-		if !fromVisible || !toVisible {
-			continue
-		}
-		if edge.Kind == EdgeLatest {
-			fmt.Fprintf(&output, "  %s -.->|latest| %s\n", from, to)
-		} else {
-			fmt.Fprintf(&output, "  %s --> %s\n", from, to)
-		}
-	}
-
-	output.WriteString("  classDef module fill:#e8f1ff,stroke:#2563eb,color:#111827\n")
-	output.WriteString("  classDef resource fill:#f8fafc,stroke:#64748b,color:#111827\n")
-	output.WriteString("  classDef topic fill:#f5f3ff,stroke:#7c3aed,color:#111827\n")
-	for _, kind := range []NodeKind{NodeModule, NodeResource, NodeTopic} {
-		if len(classes[kind]) > 0 {
-			fmt.Fprintf(&output, "  class %s %s\n", strings.Join(classes[kind], ","), kind)
-		}
-	}
-
-	return output.String()
-}
-
-var importPath = regexp.MustCompile(`(?:[[:alnum:]_.~+-]+/)+([[:alnum:]_]+)\.`)
-
-func shortenImportPaths(value string) string {
-	return importPath.ReplaceAllString(value, "$1.")
-}
-
 func sortedTypes(set map[reflect.Type]struct{}) []reflect.Type {
 	types := make([]reflect.Type, 0, len(set))
 	for typeOf := range set {
@@ -338,14 +251,4 @@ func sortedTypes(set map[reflect.Type]struct{}) []reflect.Type {
 
 func typeIdentity(typeOf reflect.Type) string {
 	return typeOf.PkgPath() + "\x00" + typeOf.String()
-}
-
-// escapeMermaid neutralises characters that break quoted Mermaid labels.
-// Mermaid uses HTML-entity style escapes, not backslashes; '#' is escaped
-// first so the replacement codes themselves survive.
-func escapeMermaid(value string) string {
-	value = strings.ReplaceAll(value, "#", "#35;")
-	value = strings.ReplaceAll(value, "\\", "#92;")
-	value = strings.ReplaceAll(value, "\"", "#quot;")
-	return strings.ReplaceAll(value, "\n", " ")
 }
