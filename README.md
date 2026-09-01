@@ -150,6 +150,29 @@ newest value and its arrival time; `Watch` gives dynamic consumers (an HTTP
 handler, an SSE stream) latest-wins updates that may skip intermediate values
 but can never stall the publishers.
 
+Code outside the runtime can project a channel through the same constructor the
+runtime uses:
+
+```go
+updates := make(chan printerState, 1)
+latest := backplane.NewLatest((<-chan printerState)(updates))
+
+updates <- printing
+```
+
+The caller owns `updates`: `NewLatest` reads it but never closes it. Closing the
+channel projects any buffered values, retains the final one, and then closes all
+watchers. The projection runs asynchronously, so a completed send or close is
+not a read-after-write barrier for `Load`; wait for `Watch` when synchronisation
+matters. Passing a nil channel panics. `Latest` itself deliberately has no
+`Publish` or `Close` method, so passing it to a module does not also hand that
+module control of the source.
+
+Runtime-owned projections use a private one-value, latest-wins input so they do
+not add backpressure to the topic. Topic completion waits for that input to be
+drained, preserving the guarantee that `Load` sees the final accepted value
+after `Run` returns.
+
 ## What backplane is not
 
 - **Not a message broker** — no persistence, cross-process transport, or QoS.

@@ -26,6 +26,85 @@ func TestLatestZeroValueHoldsNothing(t *testing.T) {
 	}
 }
 
+func TestNewLatestRejectsNilUpdateChannel(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewLatest accepted a nil update channel")
+		}
+	}()
+
+	backplane.NewLatest[int](nil)
+}
+
+func TestNewLatestProjectsChannelUpdates(t *testing.T) {
+	updates := make(chan int)
+	latest := backplane.NewLatest(updates)
+	defer close(updates)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	watcher := latest.Watch(ctx)
+
+	sentAt := time.Now()
+	select {
+	case updates <- 42:
+	case <-ctx.Done():
+		t.Fatal("NewLatest did not receive an update")
+	}
+
+	select {
+	case got := <-watcher:
+		if got != 42 {
+			t.Fatalf("Watch() delivered %d, want 42", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("Watch() did not deliver the channel update")
+	}
+
+	got, receivedAt, ok := latest.Load()
+	if !ok || got != 42 {
+		t.Fatalf("Load() = %d, %v; want 42, true", got, ok)
+	}
+	if receivedAt.Before(sentAt) || receivedAt.After(time.Now()) {
+		t.Fatalf("Load() arrival time = %v; want a time after the update was sent", receivedAt)
+	}
+}
+
+func TestNewLatestClosesAfterUpdateChannelCloses(t *testing.T) {
+	updates := make(chan string)
+	latest := backplane.NewLatest(updates)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	watcher := latest.Watch(ctx)
+
+	select {
+	case updates <- "final":
+	case <-ctx.Done():
+		t.Fatal("NewLatest did not receive the final update")
+	}
+	select {
+	case <-watcher:
+	case <-ctx.Done():
+		t.Fatal("Watch() did not deliver the final update")
+	}
+	close(updates)
+
+	select {
+	case _, ok := <-watcher:
+		if ok {
+			t.Fatal("Watch() remained open after the update channel closed")
+		}
+	case <-ctx.Done():
+		t.Fatal("Watch() did not close with the update channel")
+	}
+
+	got, _, ok := latest.Load()
+	if !ok || got != "final" {
+		t.Fatalf("Load() = %q, %v; want final, true", got, ok)
+	}
+}
+
 func TestLatestRetainsTheFinalTopicValue(t *testing.T) {
 	type printerState string
 

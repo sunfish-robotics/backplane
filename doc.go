@@ -76,6 +76,8 @@
 // [Latest] is the deliberate boundary between streams and state: it retains
 // the newest value and its arrival time, and its watchers get latest-wins
 // delivery that may skip intermediate values but never backpressures the
-// topic. Use a subscriber when every value matters, a Latest when only the
-// current value does.
+// source. Use a subscriber when every value matters, a Latest when only the
+// current value does. The runtime projects topics through [NewLatest]; callers
+// outside the runtime can use the same constructor with a channel they own,
+// without gaining write or close methods on Latest itself.
 package backplane
