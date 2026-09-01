@@ -9,12 +9,49 @@ import (
 
 var latestProjectionType = reflect.TypeFor[latestProjection]()
 
-// latestProjection is the untyped view of a *Latest[T] used by the runtime to
-// detect the parameter, feed it values, and close it when its topic completes.
+// latestProjection is the untyped view used to recognise *Latest[T] during
+// signature inspection.
 type latestProjection interface {
 	messageType() reflect.Type
-	publish(value reflect.Value, receivedAt time.Time)
-	close()
+}
+
+// latestFactory bridges signature reflection back into a method where T is
+// known, allowing the runtime to use NewLatest rather than constructing or
+// mutating a projection through a second path.
+type latestFactory interface {
+	newLatest() (latestProjection, latestInput)
+}
+
+// latestInput is the runtime-owned write side of the channel consumed by a
+// Latest. It is deliberately private: modules only receive the projection.
+type latestInput interface {
+	offer(reflect.Value)
+	closeAndWait()
+}
+
+type typedLatestInput[T any] struct {
+	updates chan T
+	done    <-chan struct{}
+}
+
+func (input *typedLatestInput[T]) offer(value reflect.Value) {
+	update := value.Interface().(T)
+	select {
+	case input.updates <- update:
+	default:
+		// Runtime inputs hold one pending value. Replace it instead of
+		// backpressuring the topic; this projection is latest-wins by design.
+		select {
+		case <-input.updates:
+		default:
+		}
+		input.updates <- update
+	}
+}
+
+func (input *typedLatestInput[T]) closeAndWait() {
+	close(input.updates)
+	<-input.done
 }
 
 // Latest is a lossy, latest-wins projection of a topic: it retains the most
@@ -22,17 +59,44 @@ type latestProjection interface {
 // instead of <-chan T when it needs current state, or change notifications
 // that must never backpressure the topic.
 //
-// The runtime creates one Latest per topic and hands the same instance to
-// every module that declares it. The zero value holds no value and stays
-// empty forever; only the runtime populates a Latest.
+// The runtime creates one Latest per topic with [NewLatest] and hands the same
+// instance to every module that declares it. External callers can use NewLatest
+// to project a channel they own. Latest itself exposes no operation that can
+// publish a value or complete the projection. The zero value holds no value and
+// stays empty forever.
 type Latest[T any] struct {
 	mu         sync.Mutex
 	value      T
 	receivedAt time.Time
 	hasValue   bool
 	closed     bool
-	done       chan struct{} // created on first Watch, closed with the topic
+	done       chan struct{} // created by NewLatest or first Watch, closed with the source
 	watchers   map[chan T]struct{}
+}
+
+// NewLatest projects updates from a channel into a Latest. It starts a
+// goroutine that consumes updates until the channel closes. Each value is
+// timestamped when that goroutine receives it; closing updates closes every
+// watcher after all buffered values have been projected. NewLatest never closes
+// the supplied channel.
+//
+// Projection is asynchronous: a send or close returning does not by itself
+// guarantee that Load has observed the value. Use Watch when synchronisation is
+// required. NewLatest panics if updates is nil.
+func NewLatest[T any](updates <-chan T) *Latest[T] {
+	if updates == nil {
+		panic("backplane: NewLatest called with nil update channel")
+	}
+
+	latest := &Latest[T]{done: make(chan struct{})}
+
+	go func() {
+		for value := range updates {
+			latest.store(value, time.Now())
+		}
+		latest.close()
+	}()
+	return latest
 }
 
 // Load returns the most recent value, its arrival time, and whether any value
@@ -46,9 +110,11 @@ func (l *Latest[T]) Load() (value T, receivedAt time.Time, ok bool) {
 // Watch returns a channel that converges on the most recent value: the
 // current value (if any) is delivered immediately, and each newer value
 // overwrites any undelivered one, so a slow watcher misses intermediate
-// values rather than backpressuring the topic. The channel closes when the
-// topic completes or ctx is cancelled, whichever comes first. Watching after
-// the topic has completed yields the final value, then a closed channel.
+// values rather than backpressuring the source. The channel closes when the
+// source completes or ctx is cancelled, whichever comes first. For a runtime
+// projection the source completes with its topic; for a projection made with
+// NewLatest it completes when the updates channel closes. Watching after the
+// source has completed yields the final value, then a closed channel.
 func (l *Latest[T]) Watch(ctx context.Context) <-chan T {
 	watcher := make(chan T, 1)
 
@@ -91,18 +157,22 @@ func (*Latest[T]) messageType() reflect.Type {
 	return reflect.TypeFor[T]()
 }
 
-func (l *Latest[T]) publish(value reflect.Value, receivedAt time.Time) {
-	typedValue := value.Interface().(T)
+func (*Latest[T]) newLatest() (latestProjection, latestInput) {
+	updates := make(chan T, 1)
+	latest := NewLatest((<-chan T)(updates))
+	return latest, &typedLatestInput[T]{updates: updates, done: latest.done}
+}
 
+func (l *Latest[T]) store(value T, receivedAt time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.value = typedValue
+	l.value = value
 	l.receivedAt = receivedAt
 	l.hasValue = true
 	for watcher := range l.watchers {
 		select {
-		case watcher <- typedValue:
+		case watcher <- value:
 		default:
 			// The watcher has an undelivered value: replace it. Nothing else
 			// sends on watcher, so after the drain the send cannot block.
@@ -110,7 +180,7 @@ func (l *Latest[T]) publish(value reflect.Value, receivedAt time.Time) {
 			case <-watcher:
 			default:
 			}
-			watcher <- typedValue
+			watcher <- value
 		}
 	}
 }
@@ -138,9 +208,11 @@ func latestMessageType(parameterType reflect.Type) (reflect.Type, bool) {
 	if parameterType.Kind() != reflect.Pointer || !parameterType.Implements(latestProjectionType) {
 		return nil, false
 	}
-	return newLatestProjection(parameterType).messageType(), true
+	projection := reflect.New(parameterType.Elem()).Interface().(latestProjection)
+	return projection.messageType(), true
 }
 
-func newLatestProjection(parameterType reflect.Type) latestProjection {
-	return reflect.New(parameterType.Elem()).Interface().(latestProjection)
+func newLatestProjection(parameterType reflect.Type) (latestProjection, latestInput) {
+	factory := reflect.New(parameterType.Elem()).Interface().(latestFactory)
+	return factory.newLatest()
 }

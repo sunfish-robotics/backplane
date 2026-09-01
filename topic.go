@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"sync"
-	"time"
 )
 
 // topic carries every value published to one exact Go type from its
@@ -21,6 +20,7 @@ type topic struct {
 	inputs      []*publisherEndpoint
 	subscribers []subscription
 	latest      latestProjection
+	latestInput latestInput
 
 	mu        sync.Mutex
 	remaining int           // publisher endpoints not yet closed or returned
@@ -71,7 +71,7 @@ func (t *topic) addSubscriber(parameterType reflect.Type, moduleDone chan struct
 
 func (t *topic) addLatest(parameterType reflect.Type) reflect.Value {
 	if t.latest == nil {
-		t.latest = newLatestProjection(parameterType)
+		t.latest, t.latestInput = newLatestProjection(parameterType)
 	}
 	return reflect.ValueOf(t.latest)
 }
@@ -118,8 +118,8 @@ func (t *topic) pump(ctx context.Context) {
 			inputs = slices.Delete(inputs, chosen-2, chosen-1)
 		case cancelled: // cancellation interrupts delivery: drain and drop
 		default:
-			if t.latest != nil {
-				t.latest.publish(value, time.Now())
+			if t.latestInput != nil {
+				t.latestInput.offer(value)
 			}
 			cancelled = !t.deliver(value, contextDone)
 		}
@@ -151,10 +151,12 @@ func (t *topic) deliver(value reflect.Value, contextDone reflect.SelectCase) boo
 }
 
 func (t *topic) finish() {
+	// Finish the projection before closing subscribers so every observer agrees
+	// on the topic's final state when subscription completion becomes visible.
+	if t.latestInput != nil {
+		t.latestInput.closeAndWait()
+	}
 	for _, sub := range t.subscribers {
 		sub.channel.Close()
-	}
-	if t.latest != nil {
-		t.latest.close()
 	}
 }

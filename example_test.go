@@ -118,3 +118,17 @@ func ExampleLatest() {
 	// Output:
 	// printer-1 is idle
 }
+
+func ExampleNewLatest() {
+	updates := make(chan string, 1)
+	latest := backplane.NewLatest((<-chan string)(updates))
+
+	updates <- "ready"
+	close(updates)
+
+	for state := range latest.Watch(context.Background()) {
+		fmt.Println(state)
+	}
+	// Output:
+	// ready
+}
