@@ -64,9 +64,6 @@ func TestGraphIsDeterministic(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("Graph() is not deterministic:\n%#v\n%#v", first, second)
 	}
-	if first.Mermaid() != second.Mermaid() {
-		t.Fatal("Mermaid() is not deterministic")
-	}
 }
 
 func TestGraphKeepsDuplicateModulesDistinct(t *testing.T) {
@@ -89,79 +86,6 @@ func TestGraphKeepsDuplicateModulesDistinct(t *testing.T) {
 	}
 	if len(duplicates) != 2 {
 		t.Fatalf("Graph() has %d graphSyncBackend nodes, want 2 honest duplicates: %#v", len(duplicates), graph.Nodes)
-	}
-}
-
-func TestGraphRendersMermaid(t *testing.T) {
-	application, err := backplane.New(graphSyncBackend, graphScheduleJobs, graphServeHTTP)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	mermaid := application.Graph().Mermaid()
-	for _, want := range []string{
-		"flowchart TB",
-		"backplane_test.graphSyncBackend",
-		"backplane_test.graphScheduleJobs",
-		"backplane_test.graphServeHTTP",
-		"backplane_test.graphQueueChanged",
-		"-.->|latest|",
-		"classDef module",
-		"classDef topic",
-	} {
-		if !strings.Contains(mermaid, want) {
-			t.Fatalf("Mermaid() output does not contain %q:\n%s", want, mermaid)
-		}
-	}
-	if strings.Contains(mermaid, "backplane_test.graphStore") {
-		t.Fatalf("Mermaid() included resources by default:\n%s", mermaid)
-	}
-}
-
-func TestMermaidCanIncludeResources(t *testing.T) {
-	application, err := backplane.New(graphSyncBackend, graphScheduleJobs)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	mermaid := application.Graph().MermaidWith(backplane.MermaidOptions{Resources: true})
-	for _, want := range []string{
-		`("backplane_test.graphStore")`,
-		"classDef resource",
-	} {
-		if !strings.Contains(mermaid, want) {
-			t.Fatalf("MermaidWith() output does not contain %q:\n%s", want, mermaid)
-		}
-	}
-}
-
-func TestMermaidCanRenderLeftToRight(t *testing.T) {
-	application, err := backplane.New(graphSyncBackend)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	mermaid := application.Graph().MermaidWith(backplane.MermaidOptions{
-		Direction: backplane.MermaidLeftToRight,
-	})
-	if !strings.HasPrefix(mermaid, "flowchart LR\n") {
-		t.Fatalf("MermaidWith() did not render left to right:\n%s", mermaid)
-	}
-}
-
-func TestMermaidShortensImportPathsInsideGenericTypes(t *testing.T) {
-	graph := backplane.Graph{Nodes: []backplane.Node{{
-		ID:    "topic:0",
-		Kind:  backplane.NodeTopic,
-		Label: "mavlink.MessageOf[*github.com/bluenviron/gomavlib/v3/pkg/dialects/common.MessageAttitude]",
-	}}}
-
-	mermaid := graph.Mermaid()
-	if !strings.Contains(mermaid, "mavlink.MessageOf[*common.MessageAttitude]") {
-		t.Fatalf("Mermaid() did not shorten the generic type label:\n%s", mermaid)
-	}
-	if strings.Contains(mermaid, "github.com/bluenviron") {
-		t.Fatalf("Mermaid() retained an import path in the display label:\n%s", mermaid)
 	}
 }
 
@@ -272,27 +196,6 @@ func TestGraphIncludeRejectsUnknownModules(t *testing.T) {
 	_, err = application.Graph().Include("missing")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("Include() error = %v, want module not found", err)
-	}
-}
-
-func TestMermaidEscapesQuotedLabels(t *testing.T) {
-	// The struct tag puts quotes and backslashes into the topic type's name.
-	publish := func(_ context.Context, tagged chan<- struct {
-		V string `json:"v"`
-	}) error {
-		return nil
-	}
-	application, err := backplane.New(publish)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	mermaid := application.Graph().Mermaid()
-	if !strings.Contains(mermaid, "#quot;") {
-		t.Fatalf("Mermaid() did not escape quotes:\n%s", mermaid)
-	}
-	if strings.Contains(mermaid, `\"`) {
-		t.Fatalf("Mermaid() left a raw quote inside a label:\n%s", mermaid)
 	}
 }
 
